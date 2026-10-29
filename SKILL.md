@@ -1,19 +1,14 @@
 ---
 name: skill-creator
-description: Create new skills, modify and improve existing skills, and measure skill performance for Muse and Muse Code. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
+description: Create new skills, modify and improve existing skills, and measure skill performance in the Muse app. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy.
 ---
 
 # Skill Creator
 
-> Muse port. Adapted from Anthropic's skill-creator (Apache-2.0, see LICENSE.txt).
-> In Muse Code, headless runs use `muse exec`, not `claude -p`. In the Muse app,
-> there is no shell CLI: run test prompts as subagents (with-skill vs baseline)
-> and present results in chat instead of using the CLI optimisation loop.
-> The CLI scripts in `scripts/` are for Muse Code. Their trigger detection is
-> best-effort (see `scripts/run_eval.py`): Muse Code does not expose the
-> Claude-style stream-json Skill tool event that the original relied on, so
-> verify `muse exec --help` output on your installed version before treating
-> a trigger score as exact.
+> Muse app version. Adapted from Anthropic's skill-creator (Apache-2.0, see LICENSE.txt).
+> Every step below is built for the Muse app: test runs use subagents,
+> results are presented in chat, and the bundled scripts are plain Python
+> that runs in this environment. No terminal evaluation loop is required.
 
 A skill for creating new skills and iteratively improving them.
 
@@ -21,7 +16,7 @@ At a high level, the process of creating a skill goes like this:
 
 - Decide what you want the skill to do and roughly how it should do it
 - Write a draft of the skill
-- Create a few test prompts and run muse-with-access-to-the-skill on them
+- Create a few test prompts and run a subagent with the skill on them
 - Help the user evaluate the results both qualitatively and quantitatively
   - While the runs happen in the background, draft some quantitative evals if there aren't any (if there are some, you can either use as is or modify if you feel something needs to change about them). Then explain them to the user (or if they already existed, explain the ones that already exist)
   - Use the `eval-viewer/generate_review.py` script to show the user the results for them to look at, and also let them look at the quantitative metrics
@@ -35,7 +30,7 @@ On the other hand, maybe they already have a draft of the skill. In this case yo
 
 Of course, you should always be flexible and if the user is like "I don't need to run a bunch of evaluations, just vibe with me", you can do that instead.
 
-Then after the skill is done (but again, the order is flexible), you can also run the skill description improver, which we have a whole separate script for, to optimize the triggering of the skill.
+Then after the skill is done (but again, the order is flexible), you can also run the description optimisation step below — draft candidate descriptions, test them with subagents, and pick the best — to optimize the triggering of the skill.
 
 Cool? Cool.
 
@@ -172,7 +167,7 @@ See `references/schemas.md` for the full schema (including the `assertions` fiel
 
 ## Running and evaluating test cases
 
-This section is one continuous sequence — don't stop partway through. Do NOT use `/skill-test` or any other testing skill.
+This section is one continuous sequence — don't stop partway through.
 
 Put results in `<skill-name>-workspace/` as a sibling to the skill directory. Within the workspace, organize results by iteration (`iteration-1/`, `iteration-2/`, etc.) and within that, each test case gets a directory (`eval-0/`, `eval-1/`, etc.). Don't create all of this upfront — just create directories as you go.
 
@@ -214,51 +209,39 @@ Good assertions are objectively verifiable and have descriptive names — they s
 
 Update the `eval_metadata.json` files and `evals/evals.json` with the assertions once drafted. Also explain to the user what they'll see in the viewer — both the qualitative outputs and the quantitative benchmark.
 
-### Step 3: As runs complete, capture timing data
+### Step 3: Capture timing only if a run reports it
 
-When each subagent task completes, you receive a notification containing `total_tokens` and `duration_ms`. Save this data immediately to `timing.json` in the run directory:
+If a run reports timing (tokens, duration), save it to `timing.json` in the run directory. Timing is optional in the Muse app — do not invent it, and do not block the workflow if a run does not report it. Benchmarks below are built from grading results; time and token figures appear only when timing was actually reported.
 
-```json
-{
-  "total_tokens": 84852,
-  "duration_ms": 23332,
-  "total_duration_seconds": 23.3
-}
-```
-
-This is the only opportunity to capture this data — it comes through the task notification and isn't persisted elsewhere. Process each notification as it arrives rather than trying to batch them.
-
-### Step 4: Grade, aggregate, and launch the viewer
+### Step 4: Grade, aggregate, and generate the viewer
 
 Once all runs are done:
 
-1. **Grade each run** — spawn a grader subagent (or grade inline) that reads `agents/grader.md` and evaluates each assertion against the outputs. Save results to `grading.json` in each run directory. The grading.json expectations array must use the fields `text`, `passed`, and `evidence` (not `name`/`met`/`details` or other variants) — the viewer depends on these exact field names. For assertions that can be checked programmatically, write and run a script rather than eyeballing it — scripts are faster, more reliable, and can be reused across iterations.
+1. **Grade each run** — spawn a grader subagent (or grade inline) that reads `agents/grader.md` and evaluates each assertion against the outputs. Save results to `grading.json` in each run directory. For the single-run Muse app layout in Step 1, that is `<config>/grading.json` beside `outputs/` (for example, `with_skill/grading.json`); if you run a config more than once, use `<config>/run-1/grading.json`, `run-2/`, and so on, and the aggregator handles both layouts. The grading.json expectations array must use the fields `text`, `passed`, and `evidence` (not `name`/`met`/`details` or other variants) — the viewer depends on these exact field names. For assertions that can be checked programmatically, write and run a script rather than eyeballing it — scripts are faster, more reliable, and can be reused across iterations.
 
 2. **Aggregate into benchmark** — run the aggregation script from the skill-creator directory:
    ```bash
    python -m scripts.aggregate_benchmark <workspace>/iteration-N --skill-name <name>
    ```
-   This produces `benchmark.json` and `benchmark.md` with pass_rate, time, and tokens for each configuration, with mean ± stddev and the delta. If generating benchmark.json manually, see `references/schemas.md` for the exact schema the viewer expects.
+   This produces `benchmark.json` and `benchmark.md` with pass_rate for each configuration, with mean ± stddev and the delta. Time and token figures appear only when timing was reported. If generating benchmark.json manually, see `references/schemas.md` for the exact schema the viewer expects.
 Put each with_skill version before its baseline counterpart.
 
-3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and time/token tradeoffs.
+3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and — only where timing was reported — time/token tradeoffs.
 
-4. **Launch the viewer** with both qualitative outputs and quantitative data:
+4. **Generate the viewer as a static file** — do not start a server:
    ```bash
-   nohup python <skill-creator-path>/eval-viewer/generate_review.py \
+   python <skill-creator-path>/eval-viewer/generate_review.py \
      <workspace>/iteration-N \
      --skill-name "my-skill" \
      --benchmark <workspace>/iteration-N/benchmark.json \
-     > /dev/null 2>&1 &
-   VIEWER_PID=$!
+     --static <workspace>/iteration-N/review.html
    ```
    For iteration 2+, also pass `--previous-workspace <workspace>/iteration-<N-1>`.
-
-   **Muse Code / headless environments:** If `webbrowser.open()` is not available or the environment has no display, use `--static <output_path>` to write a standalone HTML file instead of starting a server. Feedback will be downloaded as a `feedback.json` file when the user clicks "Submit All Reviews". After download, copy `feedback.json` into the workspace directory for the next iteration to pick up.
+   Deliver `review.html` in chat as a file. The user reviews the outputs there and replies with feedback in chat, or sends back the `feedback.json` the viewer downloads on submit — either way, copy any downloaded `feedback.json` into the workspace directory for the next iteration to pick up.
 
 Note: please use generate_review.py to create the viewer; there's no need to write custom HTML.
 
-5. **Tell the user** something like: "I've opened the results in your browser. There are two tabs — 'Outputs' lets you click through each test case and leave feedback, 'Benchmark' shows the quantitative comparison. When you're done, come back here and let me know."
+5. **Tell the user** something like: "I've attached the review file. The 'Outputs' tab lets you click through each test case, and 'Benchmark' shows the quantitative comparison. Reply here with your feedback when you're done."
 
 ### What the user sees in the viewer
 
@@ -267,35 +250,16 @@ The "Outputs" tab shows one test case at a time:
 - **Output**: the files the skill produced, rendered inline where possible
 - **Previous Output** (iteration 2+): collapsed section showing last iteration's output
 - **Formal Grades** (if grading was run): collapsed section showing assertion pass/fail
-- **Feedback**: a textbox that auto-saves as they type
+- **Feedback**: a textbox; on submit, the static viewer downloads `feedback.json`, which the user sends back in chat (or they can simply reply with feedback in chat)
 - **Previous Feedback** (iteration 2+): their comments from last time, shown below the textbox
 
-The "Benchmark" tab shows the stats summary: pass rates, timing, and token usage for each configuration, with per-eval breakdowns and analyst observations.
+The "Benchmark" tab shows the stats summary: pass rates for each configuration, with per-eval breakdowns and analyst observations. Timing and token usage appear only if timing was reported for the runs.
 
-Navigation is via prev/next buttons or arrow keys. When done, they click "Submit All Reviews" which saves all feedback to `feedback.json`.
+Navigation is via prev/next buttons or arrow keys. When done, they click "Submit All Reviews", which downloads `feedback.json` for them to send back in chat.
 
 ### Step 5: Read the feedback
 
-When the user tells you they're done, read `feedback.json`:
-
-```json
-{
-  "reviews": [
-    {"run_id": "eval-0-with_skill", "feedback": "the chart is missing axis labels", "timestamp": "..."},
-    {"run_id": "eval-1-with_skill", "feedback": "", "timestamp": "..."},
-    {"run_id": "eval-2-with_skill", "feedback": "perfect, love this", "timestamp": "..."}
-  ],
-  "status": "complete"
-}
-```
-
-Empty feedback means the user thought it was fine. Focus your improvements on the test cases where the user had specific complaints.
-
-Kill the viewer server when you're done with it:
-
-```bash
-kill $VIEWER_PID 2>/dev/null
-```
+When the user tells you they're done, read their feedback: either their reply in chat, or `feedback.json` if they sent the file the viewer downloaded on submit. If both exist, use the file as the record and the chat reply as context.
 
 ---
 
@@ -307,11 +271,11 @@ This is the heart of the loop. You've run the test cases, the user has reviewed 
 
 1. **Generalize from the feedback.** The big picture thing that's happening here is that we're trying to create skills that can be used a million times (maybe literally, maybe even more who knows) across many different prompts. Here you and the user are iterating on only a few examples over and over again because it helps move faster. The user knows these examples in and out and it's quick for them to assess new outputs. But if the skill you and the user are codeveloping works only for those examples, it's useless. Rather than put in fiddly overfitty changes, or oppressively constrictive MUSTs, if there's some stubborn issue, you might try branching out and using different metaphors, or recommending different patterns of working. It's relatively cheap to try and maybe you'll land on something great.
 
-2. **Keep the prompt lean.** Remove things that aren't pulling their weight. Make sure to read the transcripts, not just the final outputs — if it looks like the skill is making the model waste a bunch of time doing things that are unproductive, you can try getting rid of the parts of the skill that are making it do that and seeing what happens.
+2. **Keep the prompt lean.** Remove things that aren't pulling their weight. Make sure to read the subagent outputs, not just the final files — if it looks like the skill is making the model waste a bunch of time doing things that are unproductive, you can try getting rid of the parts of the skill that are making it do that and seeing what happens.
 
 3. **Explain the why.** Try hard to explain the **why** behind everything you're asking the model to do. Today's LLMs are *smart*. They have good theory of mind and when given a good harness can go beyond rote instructions and really make things happen. Even if the feedback from the user is terse or frustrated, try to actually understand the task and why the user is writing what they wrote, and what they actually wrote, and then transmit this understanding into the instructions. If you find yourself writing ALWAYS or NEVER in all caps, or using super rigid structures, that's a yellow flag — if possible, reframe and explain the reasoning so that the model understands why the thing you're asking for is important. That's a more humane, powerful, and effective approach.
 
-4. **Look for repeated work across test cases.** Read the transcripts from the test runs and notice if the subagents all independently wrote similar helper scripts or took the same multi-step approach to something. If all 3 test cases resulted in the subagent writing a `create_docx.py` or a `build_chart.py`, that's a strong signal the skill should bundle that script. Write it once, put it in `scripts/`, and tell the skill to use it. This saves every future invocation from reinventing the wheel.
+4. **Look for repeated work across test cases.** Read the subagent outputs from the test runs and notice if the subagents all independently wrote similar helper scripts or took the same multi-step approach to something. If all 3 test cases resulted in the subagent writing a `create_docx.py` or a `build_chart.py`, that's a strong signal the skill should bundle that script. Write it once, put it in `scripts/`, and tell the skill to use it. This saves every future invocation from reinventing the wheel.
 
 This task is pretty important (we are trying to create billions a year in economic value here!) and your thinking time is not the blocker; take your time and really mull things over. I'd suggest writing a draft revision and then looking at it anew and making improvements. Really do your best to get into the head of the user and understand what they want and need.
 
@@ -321,7 +285,7 @@ After improving the skill:
 
 1. Apply your improvements to the skill
 2. Rerun all test cases into a new `iteration-<N+1>/` directory, including baseline runs. If you're creating a new skill, the baseline is always `without_skill` (no skill) — that stays the same across iterations. If you're improving an existing skill, use your judgment on what makes sense as the baseline: the original version the user came in with, or the previous iteration.
-3. Launch the reviewer with `--previous-workspace` pointing at the previous iteration
+3. Generate the reviewer as a static file with `--previous-workspace` pointing at the previous iteration
 4. Wait for the user to review and tell you they're done
 5. Read the new feedback, improve again, repeat
 
@@ -355,7 +319,7 @@ Create 20 eval queries — a mix of should-trigger and should-not-trigger. Save 
 ]
 ```
 
-The queries must be realistic and something a Muse Code or Muse app user would actually type. Not abstract requests, but requests that are concrete and specific and have a good amount of detail. For instance, file paths, personal context about the user's job or situation, column names and values, company names, URLs. A little bit of backstory. Some might be in lowercase or contain abbreviations or typos or casual speech. Use a mix of different lengths, and focus on edge cases rather than making them clear-cut (the user will get a chance to sign off on them).
+The queries must be realistic and something a Muse app user would actually type. Not abstract requests, but requests that are concrete and specific and have a good amount of detail. For instance, file paths, personal context about the user's job or situation, column names and values, company names, URLs. A little bit of backstory. Some might be in lowercase or contain abbreviations or typos or casual speech. Use a mix of different lengths, and focus on edge cases rather than making them clear-cut (the user will get a chance to sign off on them).
 
 Bad: `"Format this data"`, `"Extract text from PDF"`, `"Create a chart"`
 
@@ -369,101 +333,55 @@ The key thing to avoid: don't make should-not-trigger queries obviously irreleva
 
 ### Step 2: Review with user
 
-Present the eval set to the user for review using the HTML template:
+Present the eval set in chat as a numbered list, grouped into should-trigger and should-not-trigger, with the skill's current description shown alongside. Ask the user to reply with edits: change a query, flip should-trigger, add a query, or delete one. Save the final agreed set as JSON in the workspace. This step matters — bad eval queries lead to bad descriptions.
 
-1. Read the template from `assets/eval_review.html`
-2. Replace the placeholders:
-   - `__EVAL_DATA_PLACEHOLDER__` → the JSON array of eval items (no quotes around it — it's a JS variable assignment)
-   - `__SKILL_NAME_PLACEHOLDER__` → the skill's name
-   - `__SKILL_DESCRIPTION_PLACEHOLDER__` → the skill's current description
-3. Write to a temp file (e.g., `/tmp/eval_review_<skill-name>.html`) and open it: `open /tmp/eval_review_<skill-name>.html`
-4. The user can edit queries, toggle should-trigger, add/remove entries, then click "Export Eval Set"
-5. The file downloads to `~/Downloads/eval_set.json` — check the Downloads folder for the most recent version in case there are multiple (e.g., `eval_set (1).json`)
+`assets/eval_review.html` is an optional interactive table for the same review: fill its placeholders, deliver it as a file, and let the user export `eval_set.json` from it if they prefer that to replying in chat. The chat review is the default; do not require the user to download anything.
 
-This step matters — bad eval queries lead to bad descriptions.
+### Step 3: Run the optimisation loop with subagents
 
-### Step 3: Run the optimization loop
+Tell the user: "This will take some time — I'll run the optimisation loop in the background and check on it periodically."
 
-Tell the user: "This will take some time — I'll run the optimization loop in the background and check on it periodically."
+Save the eval set to the workspace, then split it 60% train / 40% held-out test, stratified by should-trigger. For each candidate description, up to 5 iterations:
 
-Save the eval set to the workspace, then run in the background:
+1. Test the candidate on the train queries: spawn a subagent per query, giving it the candidate description as the skill description to judge by and the query to handle. The subagent's job is to say whether it would use the skill for that query and to carry out the query as the skill would. Record, per query, whether the subagent used the skill and whether that matches should-trigger.
+2. Grade those runs with a grader subagent reading `agents/grader.md`, or grade inline against the should-trigger expectation. Save the results to `description_trials.json` in the workspace, one entry per candidate: description, train passed/total, test passed/total (test is scored only at the end of an iteration, so the candidate is not tuned to it).
+3. If train failures remain, draft a new candidate description from the failures: generalise from the failures to broader intent categories, do not just list the failing queries, and keep the description under about 100-200 words and under the 1024-character limit.
+4. Score the new candidate on the held-out test set the same way, then repeat.
 
-```bash
-python -m scripts.run_loop \
-  --eval-set <path-to-trigger-eval.json> \
-  --skill-path <path-to-skill> \
-  --model <model-id-powering-this-session> \
-  --max-iterations 5 \
-  --verbose
-```
-
-Use the model ID from your system prompt (the one powering the current session, e.g. Muse Spark 1.3 in the Muse app, Muse Spark in Muse Code) so the triggering test matches what the user actually experiences. Note: the scripts record `--model` for the transcript; they do not pass a `--model` flag to `muse exec`, because that flag is not verified for Muse Code here — check `muse exec --help` on your install if you need to pin a model.
-
-While it runs, periodically tail the output to give the user updates on which iteration it's on and what the scores look like.
-
-This handles the full optimization loop automatically. It splits the eval set into 60% train and 40% held-out test, evaluates the current description (running each query 3 times to get a reliable trigger rate), then calls Muse (via `muse exec` in Muse Code, or a subagent in the Muse app) to propose improvements based on what failed. It re-evaluates each new description on both train and test, iterating up to 5 times. When it's done, it opens an HTML report in the browser showing the results per iteration and returns JSON with `best_description` — selected by test score rather than train score to avoid overfitting.
+Pick the candidate with the best test score (train score breaks ties), not the best train score, to avoid overfitting. There is no automated trigger-rate tool in this version: the score is the grader's should-trigger judgement across subagent runs, and you must report it as such.
 
 ### How skill triggering works
 
-Understanding the triggering mechanism helps design better eval queries. Skills are discovered by Muse by name + description (skill search in the Muse app, skill loading in Muse Code), and Muse decides whether to consult a skill based on that description. The important thing to know is that Muse only consults skills for tasks it can't easily handle on its own — simple, one-step queries like "read this PDF" may not trigger a skill even if the description matches perfectly, because Muse can handle them directly with basic tools. Complex, multi-step, or specialized queries reliably trigger skills when the description matches.
+Understanding the triggering mechanism helps design better eval queries. Skills are discovered by Muse by name + description through skill search in the Muse app, and Muse decides whether to consult a skill based on that description. The important thing to know is that Muse only consults skills for tasks it can't easily handle on its own — simple, one-step queries like "read this PDF" may not trigger a skill even if the description matches perfectly, because Muse can handle them directly with basic tools. Complex, multi-step, or specialized queries reliably trigger skills when the description matches.
 
 This means your eval queries should be substantive enough that Muse would actually benefit from consulting a skill. Simple queries like "read file X" are poor test cases — they won't trigger skills regardless of description quality.
 
 ### Step 4: Apply the result
 
-Take `best_description` from the JSON output and update the skill's SKILL.md frontmatter. Show the user before/after and report the scores.
+Take the best description from `description_trials.json` and update the skill's SKILL.md frontmatter. Show the user before/after and report the train and test grader scores.
 
 ---
 
-### Package and Present (only if `present_files` tool is available)
+### Package and Present
 
-Check whether you have access to the `present_files` tool. If you don't, skip this step. If you do, package the skill and present the .skill file to the user:
+Package the skill and deliver it in chat:
 
 ```bash
 python -m scripts.package_skill <path/to/skill-folder>
 ```
 
-After packaging, direct the user to the resulting `.skill` file path so they can install it.
+After packaging, deliver the resulting `.skill` file in chat so the user can install it.
 
 ---
 
-## Muse-app-specific instructions
+## Updating an existing skill
 
-In the Muse app, the core workflow is the same (draft → test → review → improve → repeat), but because the Muse app has no shell CLI, some mechanics change. Here's what to adapt:
-
-**Running test cases**: Use subagents when available for parallel execution. For each test case, spawn one subagent with the skill and one baseline subagent without it, as in "Running and evaluating test cases". If subagents are unavailable, read the skill's SKILL.md, then follow its instructions to accomplish the test prompt yourself. Do them one at a time. This is less rigorous than independent subagents (you wrote the skill and you're also running it, so you have full context), but it's a useful sanity check — and the human review step compensates. Skip the baseline runs only if you are doing this inline check — just use the skill to complete the task as requested.
-
-**Reviewing results**: Present results directly in the conversation. For each test case, show the prompt and the output. If the output is a file the user needs to see (like a .docx or .xlsx), save it to the filesystem and tell them where it is so they can download and inspect it. Ask for feedback inline: "How does this look? Anything you'd change?"
-
-**Benchmarking**: Skip the quantitative benchmarking if it relies on CLI trigger detection — it is not meaningful without a verified Muse Code trigger signal. Focus on qualitative feedback from the user, plus with-skill vs baseline subagent comparisons.
-
-**The iteration loop**: Same as before — improve the skill, rerun the test cases, ask for feedback — just without the browser reviewer in the middle. You can still organize results into iteration directories on the filesystem if you have one.
-
-**Description optimization**: The CLI loop (`scripts/run_loop.py`, `scripts/run_eval.py`, `scripts/improve_description.py`) requires the `muse` CLI, which is only available in Muse Code. In the Muse app, do description optimisation by hand: draft candidate descriptions, test them with subagent runs on the eval queries, and pick the one that triggers most accurately. Do not pretend a CLI run happened.
-
-**Blind comparison**: Requires subagents. Skip it if subagents are unavailable.
-
-**Packaging**: The `package_skill.py` script works anywhere with Python and a filesystem. In the Muse app, you can run it and the user can download the resulting `.skill` file.
-
-**Updating an existing skill**: The user might be asking you to update an existing skill, not create a new one. In this case:
+The user might be asking you to update an existing skill, not create a new one. In this case:
 - **Preserve the original name.** Note the skill's directory name and `name` frontmatter field -- use them unchanged. E.g., if the installed skill is `research-helper`, output `research-helper.skill` (not `research-helper-v2`).
 - **Copy to a writeable location before editing.** The installed skill path may be read-only. Copy to `/tmp/skill-name/`, edit there, and package from the copy.
 - **If packaging manually, stage in `/tmp/` first**, then copy to the output directory -- direct writes may fail due to permissions.
-
----
-
-## Muse-Code-CLI-specific instructions
-
-If you're in Muse Code (terminal/CI), the main things to know are:
-
-- You have subagents, so the main workflow (spawn test cases in parallel, run baselines, grade, etc.) all works. (However, if you run into severe problems with timeouts, it's OK to run the test prompts in series rather than parallel.)
-- Install the skill where Muse Code loads skills for the project before running any CLI eval, and trust the workspace when Muse Code asks — an untrusted checkout does not load its skills.
-- You may not have a browser or display, so when generating the eval viewer, use `--static <output_path>` to write a standalone HTML file instead of starting a server. Then share a link that the user can click to open the HTML in their browser.
-- After running tests, you should always generate the eval viewer for the human to look at examples before revising the skill yourself and trying to make corrections, using `generate_review.py` (not writing your own boutique html code). GENERATE THE EVAL VIEWER *BEFORE* evaluating inputs yourself. You want to get them in front of the human ASAP!
-- Feedback works differently with a static viewer: since there's no running server, the viewer's "Submit All Reviews" button will download `feedback.json` as a file. You can then read it from there (you may have to request access first).
-- Packaging works — `package_skill.py` just needs Python and a filesystem.
-- Description optimization (`run_loop.py` / `run_eval.py` / `improve_description.py`) uses `muse exec` via subprocess, not a browser, but please save it until you've fully finished making the skill and the user agrees it's in good shape. Before relying on it, run `muse exec --help` on your install and confirm the `--prompt-file` form and output format — the trigger check in `run_eval.py` is best-effort (it looks for the skill name in the run output) because Muse Code does not expose the original Claude stream-json Skill tool event.
-- **Updating an existing skill**: The user might be asking you to update an existing skill, not create a new one. Follow the update guidance in the Muse-app section above.
+- **Reviewing results**: Present results directly in the conversation. For each test case, show the prompt and the output. If the output is a file the user needs to see (like a .docx or .xlsx), save it to the filesystem and tell them where it is so they can download and inspect it. Ask for feedback inline: "How does this look? Anything you'd change?"
+- **Blind comparison**: Requires subagents. Skip it if subagents are unavailable.
 
 ---
 
@@ -484,13 +402,13 @@ Repeating one more time the core loop here for emphasis:
 
 - Figure out what the skill is about
 - Draft or edit the skill
-- Run muse-with-access-to-the-skill (Muse Code: `muse exec`; Muse app: a subagent with the skill) on test prompts
+- Run a subagent with the skill on test prompts
 - With the user, evaluate the outputs:
   - Create benchmark.json and run `eval-viewer/generate_review.py` to help the user review them
   - Run quantitative evals
 - Repeat until you and the user are satisfied
 - Package the final skill and return it to the user.
 
-Please add steps to your TodoList, if you have such a thing, to make sure you don't forget. If you're in Muse Code, please specifically put "Create evals JSON and run `eval-viewer/generate_review.py` so human can review test cases" in your TodoList to make sure it happens.
+Please add steps to your TodoList, if you have such a thing, to make sure you don't forget. Please specifically put "Create evals JSON and run `eval-viewer/generate_review.py --static` so human can review test cases" in your TodoList to make sure it happens.
 
 Good luck!

@@ -1,58 +1,55 @@
-# skill-creator for Muse
+# skill-creator for the Muse app
 
 Create new skills, modify and improve existing skills, and measure skill
-performance — adapted for Muse and Muse Code.
+performance — built for the Muse app.
 
-This is a Muse port of Anthropic's `skill-creator` skill
+This version is adapted from Anthropic's `skill-creator` skill
 (https://github.com/anthropics/claude-plugins-official/tree/main/plugins/skill-creator/skills/skill-creator,
 Apache-2.0, see `LICENSE.txt`). The core workflow is unchanged:
 draft → test → review → improve → repeat, with test prompts, baselines,
 grading, benchmarking, and description optimisation.
 
-## What changed from the upstream Claude version
+## How it works in the Muse app
 
-- `Claude` / `Claude Code` / `Claude.ai` / `Cowork` references become
-  `Muse` / `Muse Code` / `Muse app` / Muse Code CLI sections.
-- Headless runs use `muse exec`, not `claude -p`:
-  - `scripts/improve_description.py` now calls
-    `muse exec --prompt-file <temp-file>` instead of `claude -p` on stdin.
-  - `scripts/run_eval.py` now calls `muse exec --prompt-file <query-file>`.
-- The Muse-app workflow (no shell CLI) is now explicit: run test prompts as
-  subagents (with-skill vs baseline) and present results in chat, instead of
-  using the CLI optimisation loop.
-- `references/schemas.md` example model is now `muse-spark-1.3` instead of
-  `claude-sonnet-4-20250514`.
-- The skill name (`skill-creator`) and frontmatter description are preserved,
-  with "for Muse and Muse Code" added to the description.
+- **Test runs use subagents.** For each test prompt, spawn one subagent
+  with the skill and one baseline subagent without it, in the same turn.
+  Results are saved under `<skill-name>-workspace/iteration-N/eval-<name>/`.
+- **Results are presented in chat.** Test outputs, benchmarks, and the
+  review file are delivered as files in chat. The user replies with
+  feedback in chat, or sends back the `feedback.json` the viewer
+  downloads on submit.
+- **Description optimisation uses subagents, not an automated loop.**
+  Draft candidate descriptions, test each one with subagent runs on
+  train queries, grade them against should-trigger / should-not-trigger,
+  score them on a held-out test set, and pick the best test score.
+  Scores are grader judgements across subagent runs, reported as such —
+  there is no automated trigger-rate tool in this version.
+- **Timing is optional.** If a run reports timing, save it to
+  `timing.json`. If it does not, leave it out; benchmarks are built
+  from grading results.
 
-## Honest limitations — read before trusting CLI scores
+## What is in this skill, and how each part is used here
 
-Muse Code does not expose the Claude-style stream-json Skill tool event that
-the original `run_eval.py` relied on (a fake `.claude/commands/` file plus
-`claude -p --output-format stream-json` event detection). This port therefore
-counts a run as "triggered" when the `muse exec` output names the skill.
-That is observed use, not a proven trigger-rate measurement.
+| Component | Used in the Muse app as |
+| --- | --- |
+| `SKILL.md` | The full workflow: capture intent, draft, test, grade, improve, optimise the description, package. |
+| `agents/grader.md` | Instructions for a grader subagent that scores assertions against outputs and writes `grading.json`. |
+| `agents/comparator.md` | Instructions for a blind-comparison subagent (outputs A/B, winner unknown). |
+| `agents/analyzer.md` | Instructions for an analyst subagent that surfaces patterns in benchmark results. |
+| `references/schemas.md` | JSON schemas for `evals.json`, `eval_metadata.json`, `grading.json`, `timing.json` (optional), and `benchmark.json`. |
+| `scripts/quick_validate.py` | Validates a skill directory: `python3 scripts/quick_validate.py <skill-dir>`. |
+| `scripts/package_skill.py` | Packages a skill into a `.skill` file for delivery in chat: `python -m scripts.package_skill <skill-dir>`. |
+| `scripts/aggregate_benchmark.py` | Aggregates `grading.json` files into `benchmark.json` / `benchmark.md`: `python -m scripts.aggregate_benchmark <workspace>/iteration-N --skill-name <name>`. |
+| `scripts/utils.py` | Shared helper for parsing `SKILL.md` frontmatter, used by the scripts above. |
+| `eval-viewer/generate_review.py` | Generates the review as a **static** HTML file for delivery in chat: `python eval-viewer/generate_review.py <workspace> --skill-name <name> --benchmark <workspace>/benchmark.json --static <workspace>/review.html`. No server is started. |
+| `eval-viewer/viewer.html` | The review UI template used by the static viewer. |
+| `assets/eval_review.html` | Optional interactive table for reviewing a description eval set. The default review is in chat; use this file only if the user prefers the table. |
 
-Before relying on `run_loop.py` / `run_eval.py` scores, run
-`muse exec --help` on your installed Muse Code version and confirm the
-`--prompt-file` form and output format. The scripts record `--model` for the
-transcript but do not pass a `--model` flag to `muse exec`, because that flag
-was not verified for Muse Code here. In the Muse app, use subagent runs
-instead of these scripts.
+This version does not include terminal evaluation scripts. Anything that
+used to need one is replaced above by a subagent step, a chat step, or a
+plain Python script from the table.
 
-The `muse` CLI is not present in every Muse environment (for example, the
-Muse app VM has no `muse` binary). The scripts fail with a clear
-"muse CLI not found" message in that case rather than pretending a run
-happened.
-
-## Install
-
-### Muse Code
-
-Copy this directory to where Muse Code loads skills for your project, trust
-the workspace when asked, and run `muse exec` tests from the project root.
-
-### Muse app (this workspace layout)
+## Install in the Muse app
 
 Copy the contents of this directory into
 `~/workspace/custom-skills/skill-creator/`, then check it is discoverable
@@ -65,3 +62,9 @@ python3 -m py_compile scripts/*.py eval-viewer/*.py
 python3 scripts/quick_validate.py .
 python3 -m scripts.package_skill .
 ```
+
+## Updating an existing skill
+
+Preserve the original skill name (directory name and `name` frontmatter).
+Copy to a writeable location before editing, stage packaging in `/tmp/`
+first if direct writes fail, and package from the copy.
